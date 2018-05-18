@@ -1,0 +1,226 @@
+import tensorflow as tf 
+import numpy as np
+import PIL.Image as Image
+import random
+import os
+import time
+import cv2
+
+TRAIN_LIST_PATH = 'train.list'
+TEST_LIST_PATH = 'test.list'
+TRAIN_CHECK_POINT_PATH = 'save_check_point/train.ckpt'
+
+BATCH_SIZE = 2
+n_hidden = 32
+NUM_CLASSES = 101
+CLIP_LENGTH = 2
+n_input = 112*112*3
+CLIP_LENGTH = 16
+EPOCH_NUM = 10
+np_mean = np.load('crop_mean.npy').reshape([CLIP_LENGTH, 112, 112, 3])
+
+class LSTMAutoEncoder(object):
+    def __init__(self, _X,
+    LSTM_LAYERS = 2,
+    withInputFlag= False,
+    BATCH_SIZE = 10,
+    NUM_CLASSES = 101,
+    n_input = 112*112*3,
+    n_steps = 16,
+    n_hidden = 64, #2048
+    learning_rate = 0.0025):
+        self.n_steps = n_steps
+        self.BATCH_SIZE = BATCH_SIZE
+        self.n_input = n_input
+        self.n_hidden = n_hidden
+        self.learning_rate = learning_rate
+        self.withInputFlag = withInputFlag
+        self.encode_cell_unit = tf.contrib.rnn.LSTMCell(n_hidden, state_is_tuple=True)
+        self.decode_cell_unit = tf.contrib.rnn.LSTMCell(n_hidden, state_is_tuple=True)
+
+        self.encode_cells = tf.contrib.rnn.MultiRNNCell([self.encode_cell_unit]*LSTM_LAYERS, state_is_tuple = True)
+        self.decode_cells = tf.contrib.rnn.MultiRNNCell([self.decode_cell_unit]*LSTM_LAYERS, state_is_tuple = True)
+        self.hiddenWeights = tf.Variable(tf.random_normal([n_input, n_hidden]))
+        self.outWeights = tf.Variable(tf.truncated_normal([n_hidden, n_hidden], dtype=tf.float32))
+        self.hiddenBiases = tf.Variable(tf.random_normal([n_hidden]))
+        self.outBiases = tf.Variable(tf.constant(0.1, shape=[n_hidden], dtype=tf.float32))
+        self.oriX = _X
+        self._X = _X
+        self.encode()
+        self.decode()
+    # input: batch * n_step * n_input
+    def encode(self):
+        # change to (n_steps, batch_size, n_input)
+        self._X = tf.transpose(self._X, [1,0,2])
+        self._X = tf.reshape(self._X, [-1, self.n_input])
+
+        # Linear activation
+        self._X = tf.nn.relu(tf.matmul(self._X, self.hiddenWeights) + self.hiddenBiases)
+        # Split to n_steps' (batch * n_hidden), axis =0
+        self._X = tf.split(self._X, self.n_steps)
+        # self._X  = [tf.squeeze(t, [1]) for t in tf.split(self._X , self.n_steps, 1)]
+        # print(len(self._X))
+        # print(self._X[0].shape)
+        with tf.variable_scope('encoder'):   
+            self.aftCodes, self.encode_states = tf.contrib.rnn.static_rnn(self.encode_cells, self._X, dtype=tf.float32)
+        # print(self.aftCodes[0].shape)
+        # exit()
+    def decode_with_input(self, vs):
+        decode_states = self.encode_states
+        decode_inputs = tf.zeros([self.BATCH_SIZE, self.n_hidden],dtype = tf.float32)
+        dec_outs = []
+        for step in range(self.n_steps):
+            if(step>0):
+                vs.reuse_variables()
+            (decode_inputs, decode_states) = self.decode_cells(decode_inputs, decode_states)
+
+            decode_inputs = tf.matmul(decode_inputs , self.outWeights) + self.outBiases
+            # many to one
+            dec_outs.append(tf.expand_dims(decode_inputs[:,-1],1))
+
+        self.outputs = tf.transpose(tf.stack(dec_outs), [1, 0, 2])
+
+    def decode_without_input(self):
+        decode_inputs = [tf.zeros([self.BATCH_SIZE, self.n_hidden],dtype = tf.float32) for _ in range(self.n_steps)]
+        (decode_outputs, decode_states) = tf.contrib.rnn.static_rnn(self.decode_cells,decode_inputs,\
+                                            initial_state = self.encode_states,dtype=tf.float32)
+        final_outputs = []
+        for i, output in enumerate(decode_outputs):
+            output= tf.matmul(output , self.outWeights) + self.outBiases
+            output = tf.expand_dims(output[:,-1], 1)
+
+            final_outputs.append(output)
+        self.outputs = tf.transpose(tf.stack(final_outputs), [1, 0, 2])
+
+        # dec_weights = tf.tile(tf.expand_dims(self.outWeights, 0), [self.BATCH_SIZE, 1, 1])
+        # self.outputs = tf.matmul(dec_outs , dec_weights) + self.outBiases
+    def decode(self):
+        with tf.variable_scope('decoder') as vs:
+            if(self.withInputFlag):
+                self.decode_with_input(vs)
+            else:
+                self.decode_without_input()
+        
+        self.loss = tf.reduce_mean(tf.square(self.oriX - self.outputs))
+        self.train = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
+
+def get_video_indices(filename):
+    lines = open(filename, 'r')
+    #Shuffle data
+    lines = list(lines)
+    video_indices = list(range(len(lines)))
+    random.seed(time.time())
+    random.shuffle(video_indices)
+    validation_video_indices = video_indices[:int(len(video_indices) * 0.2)]
+    train_video_indices = video_indices[int(len(video_indices) * 0.2):]
+    return train_video_indices, validation_video_indices
+def get_test_num(filename):
+    lines = open(filename, 'r')
+    return len(list(lines))
+def frame_process(clip, clip_length=CLIP_LENGTH, crop_size=112, channel_num=3):
+    frames_num = len(clip)
+    croped_frames = np.zeros([frames_num, crop_size, crop_size, channel_num]).astype(np.float32)
+
+
+    #Crop every frame into shape[crop_size, crop_size, channel_num]
+    for i in range(frames_num):
+        img = Image.fromarray(clip[i].astype(np.uint8))
+        if img.width > img.height:
+            scale = float(crop_size) / float(img.height)
+            img = np.array(cv2.resize(np.array(img), (int(img.width * scale + 1), crop_size))).astype(np.float32)
+        else:
+            scale = float(crop_size) / float(img.width)
+            img = np.array(cv2.resize(np.array(img), (crop_size, int(img.height * scale + 1)))).astype(np.float32)
+        crop_x = int((img.shape[0] - crop_size) / 2)
+        crop_y = int((img.shape[1] - crop_size) / 2)
+        img = img[crop_x: crop_x + crop_size, crop_y : crop_y + crop_size, :]
+        croped_frames[i, :, :, :] = img - np_mean[i]
+
+    return croped_frames
+
+
+def convert_images_to_clip(filename, clip_length=CLIP_LENGTH, crop_size=112, channel_num=3):
+    clip = []
+    for parent, dirnames, filenames in os.walk(filename):
+        filenames = sorted(filenames)
+        if len(filenames) < clip_length:
+            for i in range(0, len(filenames)):
+                image_name = str(filename) + '/' + str(filenames[i])
+                img = Image.open(image_name)
+                img_data = np.array(img)
+                clip.append(img_data)
+            for i in range(clip_length - len(filenames)):
+                image_name = str(filename) + '/' + str(filenames[len(filenames) - 1])
+                img = Image.open(image_name)
+                img_data = np.array(img)
+                clip.append(img_data)
+        else:
+            s_index = random.randint(0, len(filenames) - clip_length)
+            for i in range(s_index, s_index + clip_length):
+                image_name = str(filename) + '/' + str(filenames[i])
+                img = Image.open(image_name)
+                img_data = np.array(img)
+                clip.append(img_data)
+    if len(clip) == 0:
+       print(filename)
+    clip = frame_process(clip, clip_length, crop_size, channel_num)
+    return clip#shape[clip_length, crop_size, crop_size, channel_num]
+
+def get_batches(filename, num_classes, batch_index, video_indices, batch_size=BATCH_SIZE, crop_size=112, channel_num=3, flatten=False):
+    lines = open(filename, 'r')
+    clips = []
+    labels = []
+    lines = list(lines)
+    for i in video_indices[batch_index: batch_index + batch_size]:
+        line = lines[i].strip('\n').split()
+        dirname = line[0]
+        label = line[1]
+        i_clip = convert_images_to_clip(dirname, CLIP_LENGTH, crop_size, channel_num)
+        if(flatten):
+            clips.append(i_clip.reshape((CLIP_LENGTH,crop_size*crop_size*channel_num)))
+#         print(i_clip.shape)
+        labels.append(int(label))
+    clips = np.array(clips).astype(np.float32)
+    labels = np.array(labels).astype(np.int64)
+    oh_labels = np.zeros([len(labels), num_classes]).astype(np.int64)
+    for i in range(len(labels)):
+        oh_labels[i, labels[i]] = 1
+    batch_index = batch_index + batch_size
+    batch_data = {'clips': clips, 'labels': oh_labels}
+    return batch_data, batch_index
+
+
+batch_clips =  tf.placeholder(tf.float32, shape=(BATCH_SIZE, CLIP_LENGTH, n_input))
+train_video_indices, validation_video_indices = get_video_indices(TRAIN_LIST_PATH)
+train_losses = []
+ae = LSTMAutoEncoder(batch_clips, BATCH_SIZE = BATCH_SIZE, n_hidden = n_hidden,\
+         n_input = n_input, n_steps=CLIP_LENGTH)
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+trainValIndices = [train_video_indices, validation_video_indices]
+trainValiName = ["training", "validation"]
+saver = tf.train.Saver()
+
+with tf.Session(config=config) as sess:
+    sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
+
+    for epoch in range(EPOCH_NUM):
+        loss_epoch = 0
+        batch_index = 0
+        for i in range(len(trainValIndices[0]) // BATCH_SIZE):
+            batch_data, batch_index = get_batches(TRAIN_LIST_PATH, NUM_CLASSES, batch_index,
+                             trainValIndices[0], BATCH_SIZE,flatten=True)
+
+            loss_out, accuracy_out = sess.run(
+            [ae.loss, ae.train],
+                feed_dict={batch_clips:batch_data['clips']}
+            )
+            loss_epoch += loss_out
+            if i % 10 == 0:
+                print('Epoch %d, Batch %d: Loss is %.5f'%(epoch+1, i, loss_out))
+
+            train_losses.append(loss_out)
+
+        print('Epoch %d: Average %s loss is: %.5f'%(epoch+1, trainValiName[0], loss_epoch / (len(trainValIndices[0]) // BATCH_SIZE)))
+        saver.save(sess, TRAIN_CHECK_POINT_PATH, global_step=epoch)

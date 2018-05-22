@@ -1,4 +1,4 @@
-import tensorflow as tf 
+import tensorflow as tf
 import numpy as np
 import PIL.Image as Image
 import random
@@ -27,17 +27,24 @@ class LSTMAutoEncoder(object):
         self.withInputFlag = withInputFlag
         self.encode_cell_unit = tf.contrib.rnn.LSTMCell(n_hidden, state_is_tuple=True)
         self.decode_cell_unit = tf.contrib.rnn.LSTMCell(n_hidden, state_is_tuple=True)
+        self.pred_cell_unit = tf.contrib.rnn.LSTMCell(n_hidden, state_is_tuple=True)
 
         self.encode_cells = tf.contrib.rnn.MultiRNNCell([self.encode_cell_unit]*LSTM_LAYERS, state_is_tuple = True)
         self.decode_cells = tf.contrib.rnn.MultiRNNCell([self.decode_cell_unit]*LSTM_LAYERS, state_is_tuple = True)
+        self.pred_cells = tf.contrib.rnn.MultiRNNCell([self.pred_cell_unit]*LSTM_LAYERS, state_is_tuple = True)
+
         self.hiddenWeights = tf.Variable(tf.random_normal([n_input, n_hidden]))
         self.outWeights = tf.Variable(tf.truncated_normal([n_hidden, n_hidden], dtype=tf.float32))
         self.hiddenBiases = tf.Variable(tf.random_normal([n_hidden]))
         self.outBiases = tf.Variable(tf.constant(0.1, shape=[n_hidden], dtype=tf.float32))
+        self.predWeights =  tf.Variable(tf.truncated_normal([n_hidden, n_hidden], dtype=tf.float32))
+        self.predBiases = tf.Variable(tf.constant(0.1, shape=[n_hidden], dtype=tf.float32))
         self.oriX = _X
+        self.followY = tf.transpose(tf.stack([_X[:,i+1, :] for i in range(self.n_steps-1)]),[1,0,2])
         self._X = _X
         self.encode()
         self.decode()
+        self.prediction()
     # input: batch * n_step * n_input
     def encode(self):
         # change to (n_steps, batch_size, n_input)
@@ -51,13 +58,13 @@ class LSTMAutoEncoder(object):
         # self._X  = [tf.squeeze(t, [1]) for t in tf.split(self._X , self.n_steps, 1)]
         # print(len(self._X))
         # print(self._X[0].shape)
-        with tf.variable_scope('encoder'):   
+        with tf.variable_scope('encoder'):
             self.aftCodes, self.encode_states = tf.contrib.rnn.static_rnn(self.encode_cells, self._X, dtype=tf.float32)
         # print(self.aftCodes[0].shape)
         # exit()
     def decode_with_input(self, vs):
         decode_states = self.encode_states
-        decode_inputs = tf.zeros([self.BATCH_SIZE, self.n_hidden],dtype = tf.float32)
+        decode_inputs = tf.zeros([self.BATCH_SIZE, self.n_hidden], dtype = tf.float32)
         dec_outs = []
         for step in range(self.n_steps):
             if(step>0):
@@ -90,9 +97,23 @@ class LSTMAutoEncoder(object):
                 self.decode_with_input(vs)
             else:
                 self.decode_without_input()
-        
+
         self.loss = tf.reduce_mean(tf.square(self.oriX - self.outputs))
         self.train = tf.train.AdamOptimizer().minimize(self.loss)
+    def prediction(self):
+        decode_inputs = [tf.zeros([self.BATCH_SIZE, self.n_hidden],dtype = tf.float32) for _ in range(self.n_steps)]
+        (decode_outputs, decode_states) = tf.contrib.rnn.static_rnn(self.pred_cells,decode_inputs,\
+                                            initial_state = self.encode_states,dtype=tf.float32)
+        final_outputs = []
+        for i, output in enumerate(decode_outputs):
+            output= tf.matmul(output , self.predWeights) + self.predBiases
+            output = tf.expand_dims(output[:,-1], 1)
+
+            final_outputs.append(output)
+        self.predicts = tf.transpose(tf.stack(final_outputs), [1, 0, 2])
+        self.predicts = self.predicts[:,1:,:]
+        self.predLoss = tf.reduce_mean(tf.square(self.followY - self.predicts))
+        self.predOpt = tf.train.AdamOptimizer().minimize(self.predLoss)
 
 tf.reset_default_graph()
 tf.set_random_seed(2016)
@@ -114,12 +135,14 @@ with tf.Session() as sess:
         r = np.tile(r, (1, step_num, elem_num))
         d = np.linspace(0, step_num, step_num, endpoint=False).reshape([1, step_num, elem_num])
         d = np.tile(d, (batch_num, 1, 1))
-        random_sequences = r + d
+        random_sequences =  r+d
 
-        (loss_val, _) = sess.run([ae.loss, ae.train], {_X: random_sequences})
-        print('iter %d:' % (i + 1), loss_val)
+        (loss_val, _,) = sess.run([ae.loss, ae.train], {_X: random_sequences})
+        (pred_loss, _,) = sess.run([ ae.predLoss, ae.predOpt], {_X: random_sequences})
+        print('iter %d:' % (i + 1), loss_val, pred_loss)
 
-    (input_, output_) = sess.run([ae.oriX, ae.outputs], {_X: r + d})
+    (input_, output_, pred_) = sess.run([ae.oriX, ae.outputs, ae.predicts], {_X:  r+d})
     print('train result :')
     print('input :', input_[0, :, :].flatten())
     print('output :', output_[0, :, :].flatten())
+    print('predict: ', pred_[0].flatten())

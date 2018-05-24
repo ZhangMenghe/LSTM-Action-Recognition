@@ -72,7 +72,7 @@ def run_test(listFileName, storeDir):
             except IOError as e:
                 print('Skip it!\n')
 def main():
-    spliting = ["test"]
+    spliting = ["train","test"]
     for item in spliting:
         data_dir = "bin_data/" + item
         if not os.path.exists(data_dir):

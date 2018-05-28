@@ -8,15 +8,18 @@ import cv2
 
 TRAIN_LIST_PATH = 'train.list'
 TEST_LIST_PATH = 'test.list'
-TRAIN_CHECK_POINT_PATH = 'save_check_point/train.ckpt'
+PERCEPTON_TRAIN_PATH = 'bin_data_32/train/'
+PERCEPTON_TEST_PATH = 'bin_data_32/test/'
+TRAIN_CHECK_POINT_PATH = 'model/train.ckpt'
 
 BATCH_SIZE = 2
-n_hidden = 32
+n_hidden = 1024
 NUM_CLASSES = 101
 CLIP_LENGTH = 2
 n_input = 112*112*3
+percepton_input = 4096
 CLIP_LENGTH = 16
-EPOCH_NUM = 10
+EPOCH_NUM = 400
 np_mean = np.load('crop_mean.npy').reshape([CLIP_LENGTH, 112, 112, 3])
 
 class LSTMAutoEncoder(object):
@@ -49,9 +52,10 @@ class LSTMAutoEncoder(object):
         self.outBiases = tf.Variable(tf.constant(0.1, shape=[n_hidden], dtype=tf.float32))
         self.predWeights =  tf.Variable(tf.truncated_normal([n_hidden, n_hidden], dtype=tf.float32))
         self.predBiases = tf.Variable(tf.constant(0.1, shape=[n_hidden], dtype=tf.float32))
-        self.oriX = _X
-        self.followY = tf.transpose(tf.stack([_X[:,i+1, :] for i in range(self.n_steps-1)]),[1,0,2])
-        self._X = _X
+        self.oriX = _X[:,:,:percepton_input]
+        self.followY = _X[:,:,percepton_input:]
+        # self.followY = tf.transpose(tf.stack([_X[:,i+1, :] for i in range(self.n_steps-1)]),[1,0,2])
+        self._X = _X[:,:,:percepton_input]
         self.encode()
         self.decode()
         self.prediction()
@@ -107,7 +111,6 @@ class LSTMAutoEncoder(object):
                 self.decode_with_input(vs)
             else:
                 self.decode_without_input()
-
         self.loss = tf.reduce_mean(tf.square(self.oriX - self.outputs))
         self.train = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
     def prediction(self):
@@ -121,7 +124,6 @@ class LSTMAutoEncoder(object):
 
             final_outputs.append(output)
         self.predicts = tf.transpose(tf.stack(final_outputs), [1, 0, 2])
-        self.predicts = self.predicts[:,1:,:]
         self.predLoss = tf.reduce_mean(tf.square(self.followY - self.predicts))
         self.predOpt = tf.train.AdamOptimizer().minimize(self.predLoss)
 
@@ -186,7 +188,6 @@ def convert_images_to_clip(filename, clip_length=CLIP_LENGTH, crop_size=112, cha
        print(filename)
     clip = frame_process(clip, clip_length, crop_size, channel_num)
     return clip#shape[clip_length, crop_size, crop_size, channel_num]
-
 def get_batches(filename, num_classes, batch_index, video_indices, batch_size=BATCH_SIZE, crop_size=112, channel_num=3, flatten=False):
     lines = open(filename, 'r')
     clips = []
@@ -210,13 +211,34 @@ def get_batches(filename, num_classes, batch_index, video_indices, batch_size=BA
     batch_data = {'clips': clips, 'labels': oh_labels}
     return batch_data, batch_index
 
+def get_batches_perceptons(path, num_classes, batch_index, video_indices, batch_size=BATCH_SIZE):
+    lines = os.listdir(path)
+    clips = []
+    labels = []
+    for i in video_indices[batch_index: batch_index + batch_size]:
+        label = lines[i].split('.')[0].split('_')[1]
+        i_clip = np.fromfile(path + lines[i]).astype(np.float32)
+        labels.append(int(label))
+        clips.append(i_clip)
+    clips = np.expand_dims(np.array(clips), axis=1)
+    labels = np.array(labels)
+
+    oh_labels = np.zeros([len(labels), num_classes]).astype(np.int64)
+    for i in range(len(labels)):
+        oh_labels[i, labels[i]] = 1
+    batch_index = batch_index + batch_size
+    batch_data = {'clips': clips, 'labels': oh_labels}
+    return batch_data, batch_index
+
 
 batch_clips =  tf.placeholder(tf.float32, shape=(BATCH_SIZE, CLIP_LENGTH, n_input))
+percepton_clips = tf.placeholder(tf.float32, shape=(BATCH_SIZE, 1, percepton_input*2))
+
 train_video_indices, validation_video_indices = get_video_indices(TRAIN_LIST_PATH)
 train_losses = []
 pred_losses = []
-ae = LSTMAutoEncoder(batch_clips, BATCH_SIZE = BATCH_SIZE, n_hidden = n_hidden,\
-         n_input = n_input, n_steps=CLIP_LENGTH)
+ae = LSTMAutoEncoder(percepton_clips, BATCH_SIZE = BATCH_SIZE, n_hidden = n_hidden,\
+         n_input = percepton_input, n_steps=1)
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
 trainValIndices = [train_video_indices, validation_video_indices]
@@ -229,24 +251,26 @@ with tf.Session(config=config) as sess:
 
     for epoch in range(EPOCH_NUM):
         loss_epoch = 0
+        pred_loss_epoch=0
         batch_index = 0
         for i in range(len(trainValIndices[0]) // BATCH_SIZE):
-            batch_data, batch_index = get_batches(TRAIN_LIST_PATH, NUM_CLASSES, batch_index,
-                             trainValIndices[0], BATCH_SIZE,flatten=True)
-
+            # batch_data, batch_index = get_batches(TRAIN_LIST_PATH, NUM_CLASSES, batch_index,
+            #                  trainValIndices[0], BATCH_SIZE,flatten=True)
+            batch_data, batch_index = get_batches_perceptons(PERCEPTON_TRAIN_PATH, NUM_CLASSES, batch_index, trainValIndices[0])
             loss_out, accuracy_out = sess.run(
             [ae.loss, ae.train],
-                feed_dict={batch_clips:batch_data['clips']}
+                feed_dict={percepton_clips:batch_data['clips']}
             )
             pred_loss, _ = sess.run(
-            [ae.predLoss, ae.predOpt], {batch_clips:batch_data['clips']}
+            [ae.predLoss, ae.predOpt], {percepton_clips:batch_data['clips']}
             )
             loss_epoch += loss_out
+            pred_loss_epoch+=pred_loss
             if i % 10 == 0:
-                print('Epoch %d, Batch %d: Loss is %.5f, predLoss is %.5f'%(epoch+1, i, loss_out, pred_loss))
+                print('Epoch %d, Batch %d: Loss is %.5f predLoss: %.5f'%(epoch+1, i, loss_out, pred_loss))
 
             train_losses.append(loss_out)
             pred_losses.append(pred_loss)
 
-        print('Epoch %d: Average %s loss is: %.5f'%(epoch+1, trainValiName[0], loss_epoch / (len(trainValIndices[0]) // BATCH_SIZE)))
+        print('Epoch %d: Average %s loss is: %.5f predLoss: %0.5f'%(epoch+1, trainValiName[0], loss_epoch / (len(trainValIndices[0]) // BATCH_SIZE), pred_loss_epoch / (len(trainValIndices[0]) // BATCH_SIZE)))
         saver.save(sess, TRAIN_CHECK_POINT_PATH, global_step=epoch)

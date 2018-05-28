@@ -55,7 +55,8 @@ def get_frames_data(filename,seq_num,num_frames_per_clip=16):
 def read_clip_and_label(filename, batch_size, seq_num, start_pos=-1, num_frames_per_clip=16, crop_size=112, shuffle=False):
     lines = open(filename,'r')
     read_dirnames = []
-    data = np.zeros([batch_size,num_frames_per_clip,crop_size,crop_size,3])
+    data = np.zeros([batch_size,seq_num,num_frames_per_clip,crop_size,crop_size,3])
+    tmpSlot =np.zeros([num_frames_per_clip,crop_size,crop_size,3])
     label = []
     batch_index = 0
     next_batch_start = -1
@@ -82,16 +83,20 @@ def read_clip_and_label(filename, batch_size, seq_num, start_pos=-1, num_frames_
         dirname = line[0]
         tmp_label = line[1]
         #print("Loading a video clip from {}...".format(dirname))
-        if not shuffle:
-            print("Loading a video clip from {}...".format(dirname))
+        # if not shuffle:
+        #     print("Loading a video clip from {}...".format(dirname))
 
         tmp_data, _ = get_frames_data(dirname,seq_num, num_frames_per_clip)
+        # print("getframes:")
+        # print(len(tmp_data))
+        # print(len(tmp_data[0]))
+        # print(tmp_data[0][0].shape)
         img_datas = []
         # lenght of tmp data: n_steps
         if(len(tmp_data)!=0):
-            for each_seqfrm in range(len(tmp_data)):
+            for each_seqfrm in range(len(tmp_data)):#2
                 seqfrm_data=[]
-                for j in xrange(len(tmp_data[each_seqfrm])):
+                for j in xrange(len(tmp_data[each_seqfrm])):#16
                     img = Image.fromarray(tmp_data[each_seqfrm][j].astype(np.uint8))
                     #print("********************",img)
                     if(img.width>img.height):
@@ -103,7 +108,16 @@ def read_clip_and_label(filename, batch_size, seq_num, start_pos=-1, num_frames_
                     img = img[int((img.shape[0] - crop_size)/2):int((img.shape[0] - crop_size)/2 + crop_size), int((img.shape[1] - crop_size)/2):int((img.shape[1] - crop_size)/2 + crop_size),:] - np_mean[j]
                     seqfrm_data.append(img)
                 img_datas.append(np.array(seqfrm_data))
-            data[each_seqfrm,:,:,:,:] = img_datas[each_seqfrm]
+            if(img_datas[each_seqfrm].shape[0] == 0):
+                continue;
+            elif(img_datas[each_seqfrm].shape[0] < num_frames_per_clip):
+                fsize = img_datas[each_seqfrm].shape[0]
+                tmpSlot[:fsize,:,:,:] = img_datas[each_seqfrm]
+                for i in range(fsize,num_frames_per_clip):
+                    tmpSlot[i,:,:,:] = img_datas[each_seqfrm][-1,:,:,:]
+                data[batch_index,each_seqfrm,:,:,:,:] = tmpSlot
+            else:
+                data[batch_index,each_seqfrm,:,:,:,:] = img_datas[each_seqfrm]
             label.append(int(tmp_label))
             batch_index = batch_index + 1
             read_dirnames.append(dirname)
@@ -115,9 +129,6 @@ def read_clip_and_label(filename, batch_size, seq_num, start_pos=-1, num_frames_
     #    for i in range(pad_len):
     #        data.append(img_datas)
     #        label.append(int(tmp_label))
-    print(valid_len)
     np_arr_data = np.array(data)#.astype(np.float32)
-    print(np_arr_data.shape)
     np_arr_label = np.array(label)#.astype(np.int64)
-
     return np_arr_data, np_arr_label, next_batch_start, read_dirnames,valid_len

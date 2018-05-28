@@ -124,23 +124,36 @@ hidden_num = 12
 step_num = 8
 elem_num = 1
 iteration = 1000
+restore = True
 _X = tf.placeholder(tf.float32, shape=(batch_num, step_num, elem_num))
 ae = LSTMAutoEncoder(_X, BATCH_SIZE = batch_num, n_hidden = hidden_num,\
                      n_input = elem_num, n_steps=step_num)
+saver = tf.train.Saver()
 with tf.Session() as sess:
-    sess.run(tf.global_variables_initializer())
+    if(restore):
+        saver.restore(sess, "models/testEncoderModel.ckpt")
+        print("weights: %s" %ae.hiddenWeights.eval())
+    else:
+        sess.run(tf.global_variables_initializer())
 
-    for i in range(iteration):
-        r = np.random.randint(20, size=batch_num).reshape([batch_num, 1, 1])
-        r = np.tile(r, (1, step_num, elem_num))
-        d = np.linspace(0, step_num, step_num, endpoint=False).reshape([1, step_num, elem_num])
-        d = np.tile(d, (batch_num, 1, 1))
-        random_sequences =  r+d
+        for i in range(iteration):
+            r = np.random.randint(20, size=batch_num).reshape([batch_num, 1, 1])
+            r = np.tile(r, (1, step_num, elem_num))
+            d = np.linspace(0, step_num, step_num, endpoint=False).reshape([1, step_num, elem_num])
+            d = np.tile(d, (batch_num, 1, 1))
+            random_sequences =  r+d
 
-        (loss_val, _,) = sess.run([ae.loss, ae.train], {_X: random_sequences})
-        (pred_loss, _,) = sess.run([ ae.predLoss, ae.predOpt], {_X: random_sequences})
-        print('iter %d:' % (i + 1), loss_val, pred_loss)
-
+            (loss_val, _,) = sess.run([ae.loss, ae.train], {_X: random_sequences})
+            (pred_loss, _,) = sess.run([ ae.predLoss, ae.predOpt], {_X: random_sequences})
+            print('iter %d:' % (i + 1), loss_val, pred_loss)
+            if(i % 10 == 0):
+                save_path = saver.save(sess, "models/testEncoderModel.ckpt")
+                print("Model saved in path: %s" % save_path)
+    #test
+    r = np.random.randint(20, size=batch_num).reshape([batch_num, 1, 1])
+    r = np.tile(r, (1, step_num, elem_num))
+    d = np.linspace(0, step_num, step_num, endpoint=False).reshape([1, step_num, elem_num])
+    d = np.tile(d, (batch_num, 1, 1))
     (input_, output_, pred_) = sess.run([ae.oriX, ae.outputs, ae.predicts], {_X:  r+d})
     print('train result :')
     print('input :', input_[0, :, :].flatten())

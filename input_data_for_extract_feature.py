@@ -27,6 +27,13 @@ import numpy as np
 import cv2
 import time
 
+load_np_mean = np.load('crop_mean.npy').reshape([-1, 112, 112, 3])
+np_mean = []
+for singleMean in load_np_mean:
+    singleMean = cv2.resize(singleMean, (224, 224))
+    np_mean.append(singleMean)
+np_mean = np.array(np_mean)
+
 def get_frames_data(filename,seq_num,num_frames_per_clip=16):
     ''' Given a directory containing extracted frames, return a video clip of
     (num_frames_per_clip) consecutive frames as a list of np arrays '''
@@ -62,7 +69,7 @@ def read_clip_and_label(filename, batch_size, seq_num, start_pos=-1, num_frames_
     next_batch_start = -1
     lines = list(lines)
     #print(lines)
-    np_mean = np.load('crop_mean.npy').reshape([-1, crop_size, crop_size, 3])
+
     # Forcing shuffle, if start_pos is not specified
     if start_pos < 0:
         shuffle = True
@@ -97,6 +104,8 @@ def read_clip_and_label(filename, batch_size, seq_num, start_pos=-1, num_frames_
             for each_seqfrm in range(len(tmp_data)):#2
                 seqfrm_data=[]
                 for j in xrange(len(tmp_data[each_seqfrm])):#16
+                    # print(len(tmp_data[each_seqfrm]))
+                    # print(j)
                     img = Image.fromarray(tmp_data[each_seqfrm][j].astype(np.uint8))
                     #print("********************",img)
                     if(img.width>img.height):
@@ -105,7 +114,13 @@ def read_clip_and_label(filename, batch_size, seq_num, start_pos=-1, num_frames_
                     else:
                         scale = float(crop_size)/float(img.width)
                         img = np.array(cv2.resize(np.array(img),(crop_size, int(img.height * scale + 1)))).astype(np.float32)
-                    img = img[int((img.shape[0] - crop_size)/2):int((img.shape[0] - crop_size)/2 + crop_size), int((img.shape[1] - crop_size)/2):int((img.shape[1] - crop_size)/2 + crop_size),:] - np_mean[j]
+                    # print("======")
+                    # print(img.shape)
+                    startY = int((img.shape[0] - crop_size)/2)
+                    endY = int((img.shape[0] - crop_size)/2 + crop_size)
+                    startX = int((img.shape[1] - crop_size)/2)
+                    endX = int((img.shape[1] - crop_size)/2 + crop_size)
+                    img = img[startY:endY, startX:endX,:] - np_mean[j]
                     seqfrm_data.append(img)
                 img_datas.append(np.array(seqfrm_data))
             if(img_datas[each_seqfrm].shape[0] == 0):

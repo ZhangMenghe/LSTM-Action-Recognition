@@ -6,12 +6,15 @@ The work includes
 - LSTM future frames prediction
 
 ## Files
+`extract-fc6.py` provides the code to extract UCF101 fc6 features into bin files.
+`extract-fc6-id3.py` extract ucf101 mixed-5c features into bin files
+`main.py` run lstm/gru classification training/testing
+
 `testEncoder.py` provides single number autoEncode/Decode process. Simply run `python testEncoder.py` will get the results.
-`update.py` provides this process on UCF101 dataset, the input array could be 
+`update.py` (don't use) provides this process on UCF101 dataset, the input array could be 
  -  patches: 112x112x3 images directly
  -  perceptons: 4096 dimensional fc6 features extracted from C3D model
  
-`extract-fc6.py` provides the code to extract UCF101 fc6 features into bin files.
 
 ## Dataset and Reference
 - __UCF-101__: [Action Recognition Data Set](http://crcv.ucf.edu/data/UCF101.php)
